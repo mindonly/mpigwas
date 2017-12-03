@@ -2,9 +2,17 @@
 
 import pandas as pd
 import numpy as np
-import timeit
+import sys, timeit
 
+from mpi4py import MPI
 from math import sqrt
+
+
+comm = MPI.COMM_WORLD
+rank = comm.Get_rank()
+size = comm.Get_size()              # number of nodes
+hostname = MPI.Get_processor_name() # hostname
+MASTER = 0
 
 
 # return a t-statistic for two samples
@@ -61,13 +69,17 @@ def example():
 
 
 # process NCI-60 gene expression data
-def nci():
+def seq_nci():
+    # start the timer
+    start_time = timeit.default_timer()
+
+    # prepare the data
     dataset = "NCI-60.csv"
     df = pd.read_csv(dataset, delimiter=',')
     tuples = [tuple(x) for x in df.values]
     tmp_df = pd.DataFrame(columns=['index', 'gene', 'T-stat', 'D-score'])
 
-    print("processing", dataset, "...")
+    print("processing", dataset, "sequentially ...")
     for i in range(0, len(tuples)):
         gene_name = tuples[i][0]
 
@@ -89,19 +101,89 @@ def nci():
         t_ref = tstat(smp1_ref, smp2_ref)
         d_score = dscore(t_ref, obs_dist)
 
+        # build row to append to dataframe
         row = np.array([i+2, gene_name, format(t_ref, '.3f'), format(d_score, '.3f')])
         tmp_df.loc[i] = row
 
+    # sort and write the dataframe to a csv file
     results_df = tmp_df.sort_values(['D-score'], ascending=False)
     results_df.to_csv("results.csv", index=False)
 
+    # stop the timer
+    end_time = timeit.default_timer()
+    print("elapsed time (sequential:", format(end_time - start_time, '.2f'), "s")
+
+
+def mpi_nci():
+    if rank == MASTER:
+        # start the timer
+        start_time = MPI.Wtime()
+
+        # prepare the data
+        dataset = "NCI-60.csv"
+        df = pd.read_csv(dataset, delimiter=',')
+        tuples = [tuple(x) for x in df.values]
+
+        # split and send the data
+        data = np.array_split(tuples, size-1)
+        for i in range(1, size):
+            comm.send(data[i-1], dest=i)
+       
+        comm.Barrier()
+        
+        # setup receiving dataframe; receive processed dataframes
+        tmp_df = pd.DataFrame(columns=['index', 'gene', 'T-stat', 'D-score'])
+        for i in range(1, size):
+            in_df = comm.recv(source=i)
+            tmp_df = pd.concat([tmp_df, in_df])
+
+        # sort and write the results dataframe to a csv file
+        results_df = tmp_df.sort_values(['D-score'], ascending=False)
+        results_df.to_csv("results.csv", index=False)
+       
+        # stop the timer
+        end_time = MPI.Wtime()
+        print("elapsed time (MPI):", format(end_time - start_time, '.2f'), "s")
+
+    else:
+        # setup a working dataframe; receive the dataset chunks
+        tmp_df = pd.DataFrame(columns=['index', 'gene', 'T-stat', 'D-score'])
+        data = comm.recv(source=MASTER)
+        
+        for i in range(0, len(data)):
+            gene_name = data[i][0]
+
+            # split the observation, renal cancer and control
+            ren_set = np.array(data[i][1:9], dtype=np.float64)
+            con_set = np.array(data[i][9:], dtype=np.float64) 
+
+            # reference observation, reduced samples (no blanks, NaNs)
+            smp1_ref = ren_set[~np.isnan(ren_set)]
+            smp2_ref = con_set[~np.isnan(con_set)]
+
+            # construct reduced full observation
+            reduced_obs = np.concatenate([smp1_ref, smp2_ref])
+
+            # generate random t-stat distribution for a gene
+            # based on number of renal cancer patients for that gene
+            ren_count = len(smp1_ref)
+            obs_dist = create_distribution(reduced_obs, ren_count)
+            t_ref = tstat(smp1_ref, smp2_ref)
+            d_score = dscore(t_ref, obs_dist)
+        
+            # build rows to append to working dataframe
+            row = np.array([i+2, gene_name, format(t_ref, '.3f'), format(d_score, '.3f')])
+            tmp_df.loc[i] = row
+            
+        comm.Barrier()
+
+        # send the completed dataframe back to MASTER
+        comm.send(tmp_df, dest=MASTER)
+
 
 def main():
-    # example()
-
-    nci_start_time = timeit.default_timer()
-    nci()
-    print("elapsed time:", format(timeit.default_timer() - nci_start_time, '.2f'), "s.")
+    # seq_nci()
+    # mpi_nci()
 
 
 if __name__ == "__main__":
