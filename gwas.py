@@ -29,7 +29,7 @@ def dscore(tstat, dist):
 
 
 # create a random T-statistic distribution from a gene observation
-# locked into 1000 permutations
+# remain fixed at 1000 permutations
 def create_distribution(obs, k):
     n = 1000
     d = np.zeros(n)
@@ -65,33 +65,35 @@ def nci():
     dataset = "NCI-60.csv"
     df = pd.read_csv(dataset, delimiter=',')
     tuples = [tuple(x) for x in df.values]
+    tmp_df = pd.DataFrame(columns=['index', 'gene', 'T-stat', 'D-score'])
 
-    print("idx\tgene\t\tT-statistic\t\tD-score")
-    print("-------------------------------------------")
+    print("processing", dataset, "...")
     for i in range(0, len(tuples)):
-    # for i in range(0, 10):
-
         gene_name = tuples[i][0]
 
         # split the observation, renal cancer and control
         ren_set = np.array(tuples[i][1:9])
         con_set = np.array(tuples[i][9:])
 
-        # reference observation, reduced samples
+        # reference observation, reduced samples (no blanks, NaNs)
         smp1_ref = ren_set[~np.isnan(ren_set)]
         smp2_ref = con_set[~np.isnan(con_set)]
 
         # construct reduced full observation
-        red_full_obs = np.concatenate([smp1_ref, smp2_ref])
+        reduced_obs = np.concatenate([smp1_ref, smp2_ref])
 
-        # generate t-stat distribution for a gene observation
+        # generate random t-stat distribution for a gene
         # based on number of renal cancer patients for that gene
         ren_count = len(smp1_ref)
-        obs_dist = create_distribution(red_full_obs, ren_count)
+        obs_dist = create_distribution(reduced_obs, ren_count)
         t_ref = tstat(smp1_ref, smp2_ref)
         d_score = dscore(t_ref, obs_dist)
 
-        print(i+2, "\t", gene_name, "\t\t", format(t_ref, '.2f'), "\t\t", format(d_score, '.2f'))
+        row = np.array([i+2, gene_name, format(t_ref, '.3f'), format(d_score, '.3f')])
+        tmp_df.loc[i] = row
+
+    results_df = tmp_df.sort_values(['D-score'], ascending=False)
+    results_df.to_csv("results.csv", index=False)
 
 
 def main():
